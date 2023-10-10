@@ -38,9 +38,10 @@
     <arg name="pub_2d_instance_right"               default="True"   doc="instance label of each pixel (right cam)" />
     <arg name="pub_2d_confidence_left"              default="True"   doc="confidence map (left cam)" />
     <arg name="pub_2d_confidence_right"             default="True"   doc="confidence map (right cam)" />
-    <arg name="pub_3d_semantics_static"             default="True"   doc="static 3d semantics" />
-    <arg name="pub_3d_semantics_dynamic"            default="True"   doc="dynamic 3d semantics" />
+    <arg name="pub_3d_semantics_static"             default="false"   doc="static 3d semantics" />
+    <arg name="pub_3d_semantics_dynamic"            default="false"   doc="dynamic 3d semantics" />
     <arg name="pub_camera_intrinsics"               default="True"   doc="camera intrinsics" />
+    <arg name="pub_imu"                             default="True"   doc="imu data" />
 
     <param name="/kitti360_player/pub_velodyne"                       value="$(arg pub_velodyne)" />
     <param name="/kitti360_player/pub_velodyne_labeled"               value="$(arg pub_velodyne_labeled)" />
@@ -64,6 +65,7 @@
     <param name="/kitti360_player/pub_3d_semantics_static"            value="$(arg pub_3d_semantics_static)" />
     <param name="/kitti360_player/pub_3d_semantics_dynamic"           value="$(arg pub_3d_semantics_dynamic)" />
     <param name="/kitti360_player/pub_camera_intrinsics"              value="$(arg pub_camera_intrinsics)" />
+    <param name="/kitti360_player/pub_imu"                            value="$(arg pub_imu)" />
 
     <!-- the actual simulation node -->
     <node pkg="kitti360_publisher" name="kitti360_publisher" type="core.py" output="screen"/>

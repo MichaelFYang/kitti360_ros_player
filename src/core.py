@@ -32,7 +32,7 @@ import time
 import os
 import numpy as np
 import pandas as pd
-from sensor_msgs.msg import PointCloud2, PointField, Image, CameraInfo, RegionOfInterest
+from sensor_msgs.msg import PointCloud2, PointField, Image, CameraInfo, RegionOfInterest, Imu
 from std_msgs.msg import Int16MultiArray, Float32MultiArray, MultiArrayLayout, MultiArrayDimension, ColorRGBA
 from visualization_msgs.msg import MarkerArray, Marker
 from rosgraph_msgs.msg import Clock
@@ -148,6 +148,10 @@ class Kitti360DataPublisher:
     ros_publisher_camera_intrinsics_fisheye_left = None
     ros_publisher_camera_intrinsics_fisheye_right = None
     publish_camera_intrinsics = None
+    
+    # imu data
+    ros_publisher_imu = None
+    publish_imu = None
 
     # ------------------------------------------
     # Timestamps
@@ -163,6 +167,8 @@ class Kitti360DataPublisher:
     timestamps_velodyne = None
     # data_3d_raw/2013_05_28_drive_{seq:0>4}_sync/sick_points/timestamps.txt
     timestamps_sick_points = None
+    # data_3d_raw/2013_05_28_drive_{seq:0>4}_sync/oxts/timestamps.txt
+    timestamps_imu = None
 
     # ------------------------------------------
     # Poses
@@ -308,6 +314,8 @@ class Kitti360DataPublisher:
             "/kitti360_player/pub_3d_semantics_dynamic")
         self.publish_camera_intrinsics = rospy.get_param(
             "/kitti360_player/pub_camera_intrinsics")
+        self.publish_imu = rospy.get_param(
+            "/kitti360_player/pub_imu")
 
         rospy.loginfo(
             "Filling caches and preprocessing... this can take few seconds!")
@@ -317,6 +325,9 @@ class Kitti360DataPublisher:
 
         # read poses
         self.read_poses()
+        
+        # read imu data
+        self.read_imu()
 
         # init all publishers
         self.init_publishers()
@@ -453,6 +464,7 @@ class Kitti360DataPublisher:
         ret.update(self._publish_bounding_boxes_rviz_marker(frame))
         ret.update(self._publish_2d_semantics(frame))
         ret.update(self._publish_3d_semantics(frame))
+        ret.update(self._publish_imu(frame))
         return ret
 
     # ------------------------------------------
@@ -677,6 +689,9 @@ class Kitti360DataPublisher:
         if self.publish_3d_semantics_dynamic:
             self.ros_publisher_3d_semantics_dynamic = rospy.Publisher(
                 "kitti360/3d/semantics/dynamic", PointCloud2, queue_size=1)
+        if self.publish_imu:
+            self.ros_publisher_imu = rospy.Publisher(
+                "kitti360/imu", Imu, queue_size=1)
 
     def read_bounding_boxes(self):
         if not self.publish_bounding_boxes and not self.publish_bounding_boxes_rviz_marker:
@@ -815,6 +830,18 @@ class Kitti360DataPublisher:
             rospy.logerr(
                 "timestamps for right fisheye camera not found. Disabling.")
             self.publish_fisheye_right = False
+            
+        # IMU
+        # data_poses/2013_05_28_drive_{seq:0>4}_sync/oxts/data
+        try:
+            self.timestamps_imu = _read_timestamps(
+                os.path.join(self.DATA_DIRECTORY, "data_poses",
+                             self.SEQUENCE_DIRECTORY,
+                             "oxts", "timestamps.txt"))
+        except FileNotFoundError:
+            rospy.logerr(
+                "timestamps for oxts imu not found. Disabling.")
+            self.publish_imu = False
 
         return 0
 
@@ -837,6 +864,33 @@ class Kitti360DataPublisher:
         # pandas Series index is frame_id
         # --> access using .loc[frame_id] (may result in KeyError because not all poses exist)
         self.poses = poses
+        
+    def read_imu(self):
+        data_path = os.path.join(self.DATA_DIRECTORY, "data_poses",
+                                 self.SEQUENCE_DIRECTORY, "oxts", "data")
+        
+        if not os.path.exists(data_path):
+            rospy.logerr(
+                f"Could not find sync oxts data. File does not exist or is not in correct location (expected: {data_path}). FATAL"
+            )
+            rospy.signal_shutdown("poses.txt does not exist but is required")
+            exit()
+        # read all txt files in data_path
+        imu_data = []
+        # read the file line by line ordered by filename
+        for i, filename in enumerate(sorted(os.listdir(data_path))):
+            with open(os.path.join(data_path, filename), "r") as f:
+                line = f.readlines()
+                # convert line into float list separated by space
+                line = [i] + [float(x) for x in line[0].split(" ")]
+                imu_data.append(line)
+        # make pandas dataframe
+        imu_data = pd.DataFrame(imu_data)
+        # set index to frame_id
+        imu_data = imu_data.set_index(0)
+        
+        self.imu_data = imu_data
+        
 
     def read_3d_semantics_dir(self):
 
@@ -1465,6 +1519,40 @@ class Kitti360DataPublisher:
         self.ros_publisher_3d_raw_velodyne_labeled.publish(cloud_msg)
 
         return dict([("velodyne labeled", time.time() - s)])
+    
+    
+    def _publish_imu(self, frame):
+        if not self.publish_imu:
+            return dict()
+        
+        # for benchmarking
+        s = time.time()
+        
+        # init ros imu message
+        imu_msg = Imu()
+        imu_msg.header.stamp = self.timestamps_imu.iloc[frame]
+        imu_msg.header.frame_id = "kitti360_gpsimu"
+        # extract imu data from sync oxts data
+        imu_data_frame = self.imu_data.iloc[frame]
+        # convert imu data to ros imu message
+        imu_msg.linear_acceleration.x = imu_data_frame[11]
+        imu_msg.linear_acceleration.y = imu_data_frame[12]
+        imu_msg.linear_acceleration.z = imu_data_frame[13]
+        imu_msg.angular_velocity.x = imu_data_frame[17]
+        imu_msg.angular_velocity.y = imu_data_frame[18]
+        imu_msg.angular_velocity.z = imu_data_frame[19]
+        # convert roll pitch, yaw to quaternion
+        quaternion = transformations.quaternion_from_euler(
+            imu_data_frame[3], imu_data_frame[4], imu_data_frame[5])
+        imu_msg.orientation.x = quaternion[0]
+        imu_msg.orientation.y = quaternion[1]
+        imu_msg.orientation.z = quaternion[2]
+        imu_msg.orientation.w = quaternion[3]
+        
+        # punt imu message
+        self.ros_publisher_imu.publish(imu_msg)
+        
+        return dict([("imu", time.time() - s)])
 
     def _publish_transforms(self, frame):
         # FIXME the pointcloud sometimes jumps out and back when playing at
